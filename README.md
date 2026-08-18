@@ -43,7 +43,7 @@ If you use TurkicNLP in your research, please cite:
 [Jupyter notebooks are here](https://github.com/turkic-nlp/turkic-nlp-code-samples)
 
 ## Discord Channel
-[TurkicNLP discord](https://discord.gg/EMzAY8kE)
+[TurkicNLP discord](https://discord.gg/CeVTbGpmMQ)
 
 ## Datasets & Models
 [🤗 HuggingFace](https://huggingface.co/turkicnlp)
