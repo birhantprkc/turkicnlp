@@ -42,3 +42,10 @@ class TestLanguageScripts:
     def test_unknown_language_raises(self) -> None:
         with pytest.raises(ValueError):
             get_script_config("xxx")
+
+
+def test_glotlid_label_mapping() -> None:
+    from turkicnlp.language_id import glotlid_label_for
+    assert glotlid_label_for("aze", "Latn") == "__label__azj_Latn"
+    assert glotlid_label_for("uzb", "Latn") == "__label__uzn_Latn"
+    assert glotlid_label_for("kaz", "Cyrl") == "__label__kaz_Cyrl"

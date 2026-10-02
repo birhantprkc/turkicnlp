@@ -21,6 +21,7 @@ _DEFAULT_FILENAME = "model_v3.bin"
 # different code.
 _LANG_CODE_OVERRIDES: dict[str, str] = {
     "uzb": "uzn",  # Uzbek (Latn) in GlotLID is labeled as uzn_Latn
+    "aze": "azj",  # North Azerbaijani in GlotLID is labeled as azj_Latn / azj_Cyrl
 }
 
 

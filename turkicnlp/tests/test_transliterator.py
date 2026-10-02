@@ -288,7 +288,8 @@ class TestKarakalpakTransliteration:
         assert t.transliterate("ү") == "ú"
         assert t.transliterate("ў") == "w"
         assert t.transliterate("ҳ") == "h"
-        assert t.transliterate("ы") == "í"
+        assert t.transliterate("ы") == "ı"
+        assert t.transliterate("Ы") == "Í"
 
     def test_cyrl_to_latn_digraphs(self) -> None:
         t = Transliterator("kaa", Script.CYRILLIC, Script.LATIN)
@@ -887,3 +888,75 @@ class TestUyghurMultiScript:
     def test_cts_to_cyrl(self, cts: str, cyrl: str) -> None:
         t = Transliterator("uig", Script.COMMON_TURKIC, Script.CYRILLIC)
         assert t.transliterate(cts) == cyrl
+
+
+class TestRoundTripFixes:
+    """Regression tests for fixes found by round-trip evaluation."""
+
+    def test_kazakh_2021_alphabet(self) -> None:
+        t = Transliterator("kaz", Script.CYRILLIC, Script.LATIN)
+        assert t.transliterate("Республикасы") == "Respublikasy"
+        assert t.transliterate("Әли ойын") == "Äli oiyn"
+        assert t.transliterate("шешесі шай ішті") == "şeşesı şai ıştı"
+        assert t.transliterate("Жаяу") == "Jaiau"
+        assert t.transliterate("чай, щи") == "tşai, ştşi"
+
+    def test_kazakh_round_trip(self) -> None:
+        fwd = Transliterator("kaz", Script.CYRILLIC, Script.LATIN)
+        bwd = Transliterator("kaz", Script.LATIN, Script.CYRILLIC)
+        for word in ["Әли", "ойын", "ойнады", "Айдос", "кітап", "жаяу", "сиыр", "Ұлттық"]:
+            assert bwd.transliterate(fwd.transliterate(word)) == word
+
+    def test_kazakh_latn_to_cts(self) -> None:
+        t = Transliterator("kaz", Script.LATIN, Script.COMMON_TURKIC)
+        assert t.transliterate("Qazaqstan Respublikasy") == "Qazaqstan Respublikası"
+
+    def test_uzbek_word_initial_e(self) -> None:
+        t = Transliterator("uzb", Script.LATIN, Script.CYRILLIC)
+        assert t.transliterate("edi") == "эди"
+        assert t.transliterate("Ertalab") == "Эрталаб"
+        assert t.transliterate("Yer") == "Ер"
+        assert t.transliterate("aye") == "ае"
+        assert t.transliterate("poeziya") == "поэзия"
+        assert t.transliterate("kecha") == "кеча"
+
+    def test_uzbek_yo_apostrophe(self) -> None:
+        t = Transliterator("uzb", Script.LATIN, Script.CYRILLIC)
+        assert t.transliterate("yo'q") == "йўқ"
+        assert t.transliterate("Yo‘l") == "Йўл"
+
+    def test_turkmen_word_initial_e(self) -> None:
+        t = Transliterator("tuk", Script.LATIN, Script.CYRILLIC)
+        assert t.transliterate("Eger") == "Эгер"
+        assert t.transliterate("ertir") == "эртир"
+        assert t.transliterate("gelse") == "гелсе"
+
+    def test_tatar_e_and_ye(self) -> None:
+        to_cyr = Transliterator("tat", Script.LATIN, Script.CYRILLIC)
+        to_lat = Transliterator("tat", Script.CYRILLIC, Script.LATIN)
+        assert to_cyr.transliterate("eş") == "эш"
+        assert to_cyr.transliterate("yel") == "ел"
+        assert to_lat.transliterate("ел") == "yel"
+        assert to_lat.transliterate("эчүне") == "eçüne"
+        assert to_cyr.transliterate(to_lat.transliterate("эчүне")) == "эчүне"
+
+    def test_crimean_tatar_vowels(self) -> None:
+        t = Transliterator("crh", Script.LATIN, Script.CYRILLIC)
+        assert t.transliterate("kitanı") == "китаны"
+        assert t.transliterate("kördi") == "кёрди"
+        assert t.transliterate("yol") == "ёл"
+        r = Transliterator("crh", Script.CYRILLIC, Script.LATIN)
+        assert r.transliterate("кёрди") == "kördi"
+        assert r.transliterate("ёл") == "yol"
+        assert r.transliterate("Къырым") == "Qırım"
+
+    def test_karakalpak_dotless_i(self) -> None:
+        t = Transliterator("kaa", Script.LATIN, Script.CYRILLIC)
+        assert t.transliterate("Qız") == "Қыз"
+
+    def test_cts_cyrillic_letters(self) -> None:
+        assert Transliterator("bak", Script.CYRILLIC, Script.COMMON_TURKIC).transliterate("әгәр өй һин") == "ägär öy hin"
+        assert Transliterator("chv", Script.CYRILLIC, Script.COMMON_TURKIC).transliterate("кӗнекене курнӑ") == "kenekene kurnä"
+        assert Transliterator("sah", Script.CYRILLIC, Script.COMMON_TURKIC).transliterate("һаа") == "haa"
+        assert Transliterator("alt", Script.CYRILLIC, Script.COMMON_TURKIC).transliterate("јат") == "cat"
+        assert Transliterator("kjh", Script.CYRILLIC, Script.COMMON_TURKIC).transliterate("пістің") == "pistiñ"

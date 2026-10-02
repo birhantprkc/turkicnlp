@@ -263,7 +263,7 @@ from turkicnlp.scripts.transliterator import Transliterator
 # Kazakh Cyrillic → Latin (2021 official alphabet)
 t = Transliterator("kaz", Script.CYRILLIC, Script.LATIN)
 print(t.transliterate("Қазақстан Республикасы"))
-# → Qazaqstan Respublıkasy
+# → Qazaqstan Respublikasy
 
 # Uzbek Latin → Cyrillic
 t = Transliterator("uzb", Script.LATIN, Script.CYRILLIC)

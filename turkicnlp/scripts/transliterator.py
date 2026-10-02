@@ -29,10 +29,122 @@ class Transliterator:
         self.target = target
         self._forward_map, self._reverse_map = self._load_mapping(lang, source, target)
 
+    # Placeholders (Unicode private-use area) inserted by context rules before
+    # table lookup and replaced afterwards. They never occur in real text.
+    _PUA_OUT: dict[str, str] = {
+        "\ue000": "е", "\ue001": "Е",    # Cyrillic e (from Latin ye / e)
+        "\ue002": "э", "\ue003": "Э",    # Cyrillic э (word-initial Latin e)
+        "\ue004": "й", "\ue005": "Й",    # Kazakh i after a vowel
+        "\ue006": "ё", "\ue007": "Ё",    # Crimean Tatar ö after a consonant
+        "\ue008": "ю", "\ue009": "Ю",    # Crimean Tatar ü after a consonant
+        "\ue00a": "ye", "\ue00b": "Ye",  # Tatar е -> ye
+        "\ue00c": "ö", "\ue00d": "Ö",    # Crimean Tatar ё after a consonant
+        "\ue00e": "ü", "\ue00f": "Ü",    # Crimean Tatar ю after a consonant
+    }
+    _LAT_VOWELS = set("aeiouäöüıəáóúíéâAEIOUÄÖÜIƏÁÓÚÍÉÂİ")
+    _CYR_VOWELS = set("аеёиоуыэюяәөүіұӑӗӳАЕЁИОУЫЭЮЯӘӨҮІҰӐӖӲ")
+    _CYR_SIGNS = set("ъьЪЬ")
+
+    @staticmethod
+    def _boundary(text: str, i: int) -> bool:
+        return i == 0 or not text[i - 1].isalpha()
+
+    def _latn_e_pre(self, text: str, ye: bool) -> str:
+        """Latin -> Cyrillic: word-initial / post-vocalic ``e`` -> ``э`` and
+        (if *ye*) ``ye`` -> ``е`` (Uzbek, Tatar, Turkmen)."""
+        out: list[str] = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            ctx = self._boundary(text, i) or text[i - 1] in self._LAT_VOWELS
+            if ye and ctx and ch in "yY" and i + 1 < len(text) and text[i + 1] in "eE":
+                out.append("\ue001" if ch == "Y" else "\ue000")
+                i += 2
+                continue
+            if ctx and ch in "eE":
+                out.append("\ue003" if ch == "E" else "\ue002")
+            else:
+                out.append(ch)
+            i += 1
+        return "".join(out)
+
+    def _tat_cyrl_pre(self, text: str) -> str:
+        """Tatar Cyrillic -> Latin: ``е`` word-initially / after a vowel -> ``ye``."""
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            if ch in "еЕ" and (self._boundary(text, i) or text[i - 1] in self._CYR_VOWELS
+                              or text[i - 1] in self._CYR_SIGNS):
+                out.append("\ue00b" if ch == "Е" else "\ue00a")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _kaz_latn_pre(self, text: str) -> str:
+        """Kazakh 2021 Latin -> Cyrillic: ``i`` after a vowel is ``й`` (unless it
+        starts io/iu/ia = ё/ю/я)."""
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            nxt = text[i + 1] if i + 1 < len(text) else ""
+            if (ch in "iİ" and i > 0 and text[i - 1] in self._LAT_VOWELS
+                    and nxt.lower() not in ("a", "o", "u")):
+                out.append("\ue005" if ch == "İ" else "\ue004")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _crh_latn_pre(self, text: str) -> str:
+        """Crimean Tatar Latin -> Cyrillic: ö/ü after a consonant -> ё/ю."""
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            prev = text[i - 1] if i > 0 else ""
+            after_cons = prev.isalpha() and prev not in self._LAT_VOWELS and prev not in "yY"
+            if ch in "öÖüÜ" and after_cons:
+                out.append({"ö": "\ue006", "Ö": "\ue007", "ü": "\ue008", "Ü": "\ue009"}[ch])
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _crh_cyrl_pre(self, text: str) -> str:
+        """Crimean Tatar Cyrillic -> Latin: ё/ю after a consonant -> ö/ü."""
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            prev = text[i - 1] if i > 0 else ""
+            after_cons = (prev.isalpha() and prev not in self._CYR_VOWELS
+                          and prev not in self._CYR_SIGNS)
+            if ch in "ёЁюЮ" and after_cons:
+                out.append({"ё": "\ue00c", "Ё": "\ue00d", "ю": "\ue00e", "Ю": "\ue00f"}[ch])
+            else:
+                out.append(ch)
+        return "".join(out)
+
     def transliterate(self, text: str) -> str:
         """Convert *text* from *source* script to *target* script.
 
-        Uses greedy longest-match on the forward mapping table.
+        Applies language-specific context rules, then greedy longest-match
+        on the forward mapping table.
+        """
+        key = (self.lang, self.source, self.target)
+        if key in {("uzb", Script.LATIN, Script.CYRILLIC), ("tat", Script.LATIN, Script.CYRILLIC)}:
+            if self.lang == "uzb":
+                text = self._normalize_uzb_apostrophes(text)
+            text = self._latn_e_pre(text, ye=True)
+        elif key == ("tuk", Script.LATIN, Script.CYRILLIC):
+            text = self._latn_e_pre(text, ye=False)
+        elif key == ("tat", Script.CYRILLIC, Script.LATIN):
+            text = self._tat_cyrl_pre(text)
+        elif key == ("kaz", Script.LATIN, Script.CYRILLIC):
+            text = self._kaz_latn_pre(text)
+        elif key == ("crh", Script.LATIN, Script.CYRILLIC):
+            text = self._crh_latn_pre(text)
+        elif key == ("crh", Script.CYRILLIC, Script.LATIN):
+            text = self._crh_cyrl_pre(text)
+        out = self._transliterate_core(text)
+        if any(ch in self._PUA_OUT for ch in out):
+            out = "".join(self._PUA_OUT.get(ch, ch) for ch in out)
+        return out
+
+    def _transliterate_core(self, text: str) -> str:
+        """Greedy longest-match conversion (plus language-specific handlers).
 
         Args:
             text: Input text in the source script.
@@ -494,32 +606,40 @@ class Transliterator:
 TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
     # Kazakh Cyrillic → Latin (2021 official Latin alphabet)
     "kaz_Cyrl_to_Latn": {
+        # 2021 official alphabet: И/Й -> İ i, І -> I ı, Ы -> Y y, Ш -> Ş ş,
+        # Ч -> Tş, Щ -> Ştş, Х/Һ -> H h, Ё/Ю/Я -> io/iu/ia
+        "щ": "ştş", "Щ": "Ştş", "ч": "tş", "Ч": "Tş", "ш": "ş", "Ш": "Ş",
+        "ц": "ts", "Ц": "Ts",
+        "ё": "io", "Ё": "İo", "ю": "iu", "Ю": "İu", "я": "ia", "Я": "İa",
         "ә": "ä", "Ә": "Ä", "ғ": "ğ", "Ғ": "Ğ", "қ": "q", "Қ": "Q",
         "ң": "ñ", "Ң": "Ñ", "ө": "ö", "Ө": "Ö", "ұ": "ū", "Ұ": "Ū",
         "ү": "ü", "Ү": "Ü", "і": "ı", "І": "I", "һ": "h", "Һ": "H",
-        "ш": "sh", "Ш": "Sh", "ч": "ch", "Ч": "Ch", "ж": "j", "Ж": "J",
-        "щ": "shch", "Щ": "Shch",
+        "ж": "j", "Ж": "J",
         "а": "a", "А": "A", "б": "b", "Б": "B", "в": "v", "В": "V",
         "г": "g", "Г": "G", "д": "d", "Д": "D", "е": "e", "Е": "E",
-        "ё": "yo", "Ё": "Yo", "з": "z", "З": "Z", "и": "ı", "И": "I",
-        "й": "ı", "Й": "I", "к": "k", "К": "K", "л": "l", "Л": "L",
+        "з": "z", "З": "Z", "и": "i", "И": "İ",
+        "й": "i", "Й": "İ", "к": "k", "К": "K", "л": "l", "Л": "L",
         "м": "m", "М": "M", "н": "n", "Н": "N", "о": "o", "О": "O",
         "п": "p", "П": "P", "р": "r", "Р": "R", "с": "s", "С": "S",
         "т": "t", "Т": "T", "у": "u", "У": "U", "ф": "f", "Ф": "F",
-        "х": "h", "Х": "H", "ц": "ts", "Ц": "Ts", "э": "e", "Э": "E",
-        "ъ": "", "ь": "", "ы": "y", "Ы": "Y", "ю": "yu", "Ю": "Yu",
-        "я": "ya", "Я": "Ya",
+        "х": "h", "Х": "H", "э": "e", "Э": "E",
+        "ъ": "", "Ъ": "", "ь": "", "Ь": "", "ы": "y", "Ы": "Y",
     },
 
     # Kazakh Latin → Cyrillic
     "kaz_Latn_to_Cyrl": {
-        "shch": "щ", "Shch": "Щ", "sh": "ш", "Sh": "Ш", "SH": "Ш",
-        "ch": "ч", "Ch": "Ч", "CH": "Ч", "yu": "ю", "Yu": "Ю", "YU": "Ю",
-        "ya": "я", "Ya": "Я", "YA": "Я", "yo": "ё", "Yo": "Ё", "YO": "Ё",
+        # 2021 official alphabet (reverse). Ambiguities resolved by default:
+        # i -> и (й after a vowel, see Transliterator._kaz_latn_pre), h -> х.
+        "ştş": "щ", "Ştş": "Щ", "ŞTŞ": "Щ",
+        "tş": "ч", "Tş": "Ч", "TŞ": "Ч",
         "ts": "ц", "Ts": "Ц", "TS": "Ц",
+        "io": "ё", "İo": "Ё", "İO": "Ё",
+        "iu": "ю", "İu": "Ю", "İU": "Ю",
+        "ia": "я", "İa": "Я", "İA": "Я",
+        "ş": "ш", "Ş": "Ш",
         "ä": "ә", "Ä": "Ә", "ğ": "ғ", "Ğ": "Ғ", "q": "қ", "Q": "Қ",
         "ñ": "ң", "Ñ": "Ң", "ö": "ө", "Ö": "Ө", "ū": "ұ", "Ū": "Ұ",
-        "ü": "ү", "Ü": "Ү", "ı": "і", "I": "І",
+        "ü": "ү", "Ü": "Ү", "ı": "і", "I": "І", "i": "и", "İ": "И",
         "a": "а", "A": "А", "b": "б", "B": "Б", "v": "в", "V": "В",
         "g": "г", "G": "Г", "d": "д", "D": "Д", "e": "е", "E": "Е",
         "z": "з", "Z": "З", "j": "ж", "J": "Ж", "k": "к", "K": "К",
@@ -604,6 +724,9 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Crimean Tatar Cyrillic → Latin
     "crh_Cyrl_to_Latn": {
+        # ё/ю after consonants -> ö/ü (Transliterator._crh_cyrl_pre)
+        "ё": "yo", "Ё": "Yo", "ю": "yu", "Ю": "Yu", "я": "ya", "Я": "Ya",
+        "ы": "ı", "Ы": "I", "Ъ": "", "Ь": "",
         "гъ": "ğ", "Гъ": "Ğ", "дж": "c", "Дж": "C", "къ": "q", "Къ": "Q",
         "нъ": "ñ", "Нъ": "Ñ",
         "а": "a", "А": "A", "б": "b", "Б": "B", "в": "v", "В": "V",
@@ -619,6 +742,12 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Crimean Tatar Latin → Cyrillic
     "crh_Latn_to_Cyrl": {
+        # yo/yu/ya (and yö/yü) -> ё/ю/я; ö/ü after consonants -> ё/ю
+        # (Transliterator._crh_latn_pre), elsewhere -> о/у.
+        "yo": "ё", "Yo": "Ё", "YO": "Ё", "yö": "ё", "Yö": "Ё", "YÖ": "Ё",
+        "yu": "ю", "Yu": "Ю", "YU": "Ю", "yü": "ю", "Yü": "Ю", "YÜ": "Ю",
+        "ya": "я", "Ya": "Я", "YA": "Я",
+        "ı": "ы", "I": "Ы", "ö": "о", "Ö": "О", "ü": "у", "Ü": "У",
         # Digraphs first (greedy match)
         "ts": "ц", "Ts": "Ц", "TS": "Ц",
         # Special Latin letters → Cyrillic digraphs
@@ -637,6 +766,8 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Uzbek Latin → Cyrillic (reverse of 1995 official alphabet)
     "uzb_Latn_to_Cyrl": {
+        # "yo'" must win over "yo" (ё): yo'q -> йўқ
+        "yo'": "йў", "Yo'": "Йў", "YO'": "ЙЎ",
         # Digraphs/trigraphs first (greedy match)
         "sh": "ш", "Sh": "Ш", "SH": "Ш",
         "ch": "ч", "Ch": "Ч", "CH": "Ч",
@@ -788,13 +919,14 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
         "с": "s", "С": "S", "т": "t", "Т": "T", "у": "u", "У": "U",
         "ф": "f", "Ф": "F", "х": "x", "Х": "X",
         "ц": "ts", "Ц": "Ts", "ч": "ch", "Ч": "Ch",
-        "ш": "sh", "Ш": "Sh", "ы": "í", "Ы": "Í",
+        "ш": "sh", "Ш": "Sh", "ы": "ı", "Ы": "Í",   # 2016: Í ı
         "э": "e", "Э": "E", "ю": "yu", "Ю": "Yu", "я": "ya", "Я": "Ya",
         "ъ": "", "ь": "",
     },
 
     # Karakalpak Latin → Cyrillic
     "kaa_Latn_to_Cyrl": {
+        "ı": "ы",   # 2016 alphabet: Í ı = ы (í accepted as a variant)
         # Multi-char sequences first (greedy match)
         "shch": "щ", "Shch": "Щ",
         "sh": "ш", "Sh": "Ш", "SH": "Ш",
@@ -1003,23 +1135,25 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
         "э": "e", "Э": "E", "ы": "ı", "Ы": "I", "ъ": "", "ь": "",
     },
 
-    # Kazakh Latin (2021) → CTS
+    # Kazakh Latin (2021 official alphabet) → CTS
     "kaz_Latn_to_CTS": {
+        # Input: 2021 official Kazakh Latin alphabet
+        "ştş": "şç", "Ştş": "Şç", "tş": "ç", "Tş": "Ç",
+        "io": "yo", "İo": "Yo", "iu": "yu", "İu": "Yu", "ia": "ya", "İa": "Ya",
         "ä": "ä", "Ä": "Ä", "ğ": "ğ", "Ğ": "Ğ", "q": "q", "Q": "Q",
         "ñ": "ñ", "Ñ": "Ñ", "ö": "ö", "Ö": "Ö", "ū": "u", "Ū": "U",
-        "ü": "ü", "Ü": "Ü", "ı": "ı",
-        "sh": "ş", "Sh": "Ş", "SH": "Ş", "ch": "ç", "Ch": "Ç", "CH": "Ç",
-        "İ": "y",             # Kazakh 2021: İ = /j/ (Cyrillic й) → CTS y
+        "ü": "ü", "Ü": "Ü", "ş": "ş", "Ş": "Ş",
+        "ı": "i", "I": "İ",   # Kazakh 2021 ı (Cyrillic і) -> CTS i
+        "i": "i", "İ": "İ",   # Kazakh 2021 i (Cyrillic и/й) -> CTS i
+        "y": "ı", "Y": "I",   # Kazakh 2021 y (Cyrillic ы) -> CTS ı
+        "h": "x", "H": "X",   # Kazakh h (Cyrillic х/һ) -> CTS x
+        "j": "c", "J": "C",
         "a": "a", "A": "A", "b": "b", "B": "B", "d": "d", "D": "D",
         "e": "e", "E": "E", "f": "f", "F": "F", "g": "g", "G": "G",
-        "h": "x", "H": "X",   # Kazakh h = /x/ (velar fricative) → CTS x
-        "i": "i", "I": "İ", "j": "c", "J": "C",
         "k": "k", "K": "K", "l": "l", "L": "L", "m": "m", "M": "M",
         "n": "n", "N": "N", "o": "o", "O": "O", "p": "p", "P": "P",
         "r": "r", "R": "R", "s": "s", "S": "S", "t": "t", "T": "T",
-        "u": "u", "U": "U", "v": "v", "V": "V",
-        "y": "ı", "Y": "I",   # Kazakh y = /ɯ/ (back unrounded) → CTS ı
-        "z": "z", "Z": "Z",
+        "u": "u", "U": "U", "v": "v", "V": "V", "z": "z", "Z": "Z",
     },
 
     # Uzbek Latin (1995) → CTS
@@ -1217,6 +1351,8 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Bashkir Cyrillic → CTS
     "bak_Cyrl_to_CTS": {
+        # Cyrillic ә/ө (U+04D9/U+04E9) as used in Bashkir text, and һ
+        "ә": "ä", "Ә": "Ä", "ө": "ö", "Ө": "Ö", "һ": "h", "Һ": "H",
         "щ": "şç", "Щ": "Şç",
         "ш": "ş", "Ш": "Ş", "ч": "ç", "Ч": "Ç",
         "ж": "j", "Ж": "J",   # Bashkir ж = /ʒ/
@@ -1280,6 +1416,8 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Chuvash Cyrillic → CTS
     "chv_Cyrl_to_CTS": {
+        # Cyrillic ӑ/ӗ (U+04D1/U+04D7) as used in Chuvash text
+        "ӑ": "ä", "Ӑ": "Ä", "ӗ": "e", "Ӗ": "E",
         "щ": "şç", "Щ": "Şç",
         "ш": "ş", "Ш": "Ş", "ч": "ç", "Ч": "Ç",
         "ж": "c", "Ж": "C", "ц": "ts", "Ц": "Ts",
@@ -1300,6 +1438,7 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Sakha (Yakut) Cyrillic → CTS
     "sah_Cyrl_to_CTS": {
+        "һ": "h", "Һ": "H",
         "щ": "şç", "Щ": "Şç",
         "ш": "ş", "Ш": "Ş", "ч": "ç", "Ч": "Ç",
         "ж": "c", "Ж": "C", "ц": "ts", "Ц": "Ts",
@@ -1325,7 +1464,7 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
         "ts": "ts", "Ts": "Ts",
         "á": "ä", "Á": "Ä", "ǵ": "ğ", "Ǵ": "Ğ",
         "ń": "ñ", "Ń": "Ñ", "ó": "ö", "Ó": "Ö",
-        "ú": "ü", "Ú": "Ü", "í": "ı", "Í": "I",
+        "ú": "ü", "Ú": "Ü", "í": "ı", "Í": "I", "ı": "ı",
         "q": "q", "Q": "Q", "h": "h", "H": "H",
         "a": "a", "A": "A", "b": "b", "B": "B", "d": "d", "D": "D",
         "e": "e", "E": "E", "f": "f", "F": "F", "g": "g", "G": "G",
@@ -1432,6 +1571,7 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Altai Cyrillic → CTS
     "alt_Cyrl_to_CTS": {
+        "ј": "c", "Ј": "C",   # Altai ј (U+0458) = /dʒ/
         "щ": "şç", "Щ": "Şç",
         "ш": "ş", "Ш": "Ş", "ч": "ç", "Ч": "Ç",
         "дж": "c", "Дж": "C",   # Altai /dʒ/ digraph
@@ -1473,6 +1613,10 @@ TRANSLITERATION_TABLES: dict[str, dict[str, str]] = {
 
     # Khakas Cyrillic → CTS
     "kjh_Cyrl_to_CTS": {
+        # Khakas і, ҷ, and common variants ө/ү (for ӧ/ӱ), қ, ұ
+        "і": "i", "І": "İ", "ҷ": "ç", "Ҷ": "Ç",
+        "ө": "ö", "Ө": "Ö", "ү": "ü", "Ү": "Ü",
+        "қ": "q", "Қ": "Q", "ұ": "u", "Ұ": "U",
         "щ": "şç", "Щ": "Şç",
         "ш": "ş", "Ш": "Ş", "ч": "ç", "Ч": "Ç",
         "ж": "c", "Ж": "C", "ц": "ts", "Ц": "Ts",
